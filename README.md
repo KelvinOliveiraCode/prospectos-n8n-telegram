@@ -1,183 +1,191 @@
-<div align="center">
+# ProspectOS + n8n + Telegram
 
-[English](README.en.md) · **Português (Brasil)**
+Workflow n8n, exportado em JSON, que dispara buscas no ProspectOS e entrega o CSV resultante no Telegram.
 
-</div>
-
-[![n8n](https://img.shields.io/badge/n8n-automation-blue?style=flat-square)](https://n8n.io/) [![Telegram](https://img.shields.io/badge/Telegram-Bot_API-26A5E4?style=flat-square&logo=telegram&logoColor=white)](https://core.telegram.org/bots/api) [![ProspectOS](https://img.shields.io/badge/ProspectOS-integração-107a4a?style=flat-square)](https://github.com/nando0x/ProspectOS) [![Node.js](https://img.shields.io/badge/Node.js-20+-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org/) [![JSON](https://img.shields.io/badge/Workflow-JSON-000000?style=flat-square)](workflows/ProspectOS_para_Telegram.json) [![MIT License](https://img.shields.io/badge/License-MIT-f4c430?style=flat-square)](LICENSE)
-
-### Automação n8n que dispara buscas amplas no ProspectOS e entrega o CSV completo no Telegram
-
-**497 leads na base sem automação → 502 em 1 teste real** (5 novos: 3 sem site + 2 site ruim em ~2 min de varredura, 20 empresas capturadas).
-
----
+[English](README.en.md) | Português (Brasil)
 
 ## O que é
 
-Orquestração de prospecção 100% automática: você cola **várias linhas** `nicho em cidade` no Form do n8n, ele dispara a busca no ProspectOS via API, aguarda finalizar, baixa o CSV completo e entrega no seu Telegram — já organizado por mapeamento de área para contato direto.
+Este repositório contém um único artefato executável: o workflow `workflows/ProspectOS_para_Telegram.json`, com 8 nós. Ele recebe uma lista de buscas no formato `nicho em cidade` por um formulário local do n8n, chama a API do ProspectOS (backend Flask que roda em `http://localhost:5000`), acompanha a execução por polling, baixa o CSV completo e envia o arquivo como documento no Telegram.
 
-Sem automação: abrir o ProspectOS → Nova Busca → digitar → esperar → baixar CSV → abrir Excel → enviar para si mesmo.
-Com automação: preencher 1 Form → receber no Telegram.
+O ProspectOS não vive aqui. Ele é um projeto separado, em [nando0x/ProspectOS](https://github.com/nando0x/ProspectOS), e precisa estar rodando antes de executar este workflow.
 
----
+## Status
 
-## Números (teste real 05/11/2026)
+Funcional como automação de uso pessoal. O que existe hoje:
 
-| Métrica | Sem automação | Com n8n + ProspectOS + Telegram |
-|---|---|---|
-| Base inicial | 497 leads em `leads.db` | — |
-| Busca de teste | `dentista em Belem` | 1 linha |
-| Empresas capturadas | 20 (manual) | 20 (automático) |
-| Leads novos | — | **5 (3 sem site + 2 site ruim)** |
-| Já na base | 7 atualizados | 7 deduplicados |
-| Site bom (descartados) | 8 | 8 |
-| Tempo | ~15 min manual | **~2 min** |
-| Entrega | manual | **CSV no Telegram em ~2 min** |
+- Workflow JSON importável, com 8 nós conectados (`workflows/ProspectOS_para_Telegram.json`).
+- Script de inicialização para Windows (`iniciar-n8n.bat`).
+- Exemplo de saída anonimizado (`examples/exemplo.csv`, 2 linhas de dados).
+- Guia curto de operação (`docs/GUIA.md`).
 
-> Amostra anonimizada em `examples/exemplo.csv` — 502 linhas reais, 0 dado sensível versionado.
+O que não existe: testes automatizados, linter, servidor próprio, Dockerfile, build. A verificação é manual, executando o fluxo no n8n.
 
----
+## Funcionalidades
 
-## Potencial
+O fluxo cobre um caminho só, do formulário ao documento no Telegram:
 
-- **Multi-linhas nativas:** o backend aceita `queries` com `\n`, então `clinica em Belem\nacademia em Ananindeua\ndentista em Castanhal` = 1 disparo amplo, não 3 buscas separadas. Limite no código: `MAX_LINHAS_QUERIES_BUSCA`.
-- **Escala:** base saiu de **497 → 502** em 1 disparo. Com 5 áreas × 3 nichos = 15 linhas em 1 workflow, o ganho é linear sem abrir o frontend.
-- **Reprodutível:** workflow **JSON puro** (`workflows/ProspectOS_para_Telegram.json`), importável em qualquer n8n self-host. Sem Docker obrigatório (roda com `npm`).
-- **Entrega pronta:** `/api/exportar` retorna CSV com `nome, categoria, endereco, nota, num_avaliacoes, whatsapp_link, telefone, nicho, cidade, site_status, site_url, mensagem_gerada` — contato direto sem retrabalho.
+- Formulário com um campo textarea chamado `queries`, onde cada linha é uma busca independente.
+- Normalização do valor em um nó Set (`Montar Queries Multi-Linha`).
+- Disparo de `POST /api/buscar` com o corpo `{"queries": "..."}`, preservando as quebras de linha via `JSON.stringify`.
+- Polling de `GET /api/buscar/status` a cada 20 segundos, com saída quando o campo `status` é igual a `finalizada`.
+- Download de `GET /api/exportar` no formato de arquivo (`responseFormat: file`).
+- Envio do CSV para o Telegram como documento (`channel: document`), com resumo das queries na legenda.
 
-## Utilidade
+## Arquitetura
 
-Para quem vende sites/landing pages para negócios locais sem site ou com site ruim: prospecta em piloto automático, recebe a estratégia pronta no Telegram e ataca por área com planilha organizada. Economiza ~1-2h por lote de busca e elimina o baixar/enviar manual.
+Os 8 nós do workflow, na ordem real do arquivo:
 
-> **Aviso:** scraping de Google Maps/Instagram pode violar ToS. Rode por conta e risco. Veja README do ProspectOS para riscos e mitigação.
+| Nó | Tipo | typeVersion | Função |
+|---|---|---|---|
+| Form Trigger (Localidades + Nichos) | n8n-nodes-base.FormTrigger | 1.1 | Campo textarea `queries` |
+| Montar Queries Multi-Linha | n8n-nodes-base.Set | 3 | Copia `queries` para a variável do nó |
+| ProspectOS Disparar Busca Ampla | n8n-nodes-base.HttpRequest | 4.2 | `POST http://localhost:5000/api/buscar` |
+| Aguardar 20s | n8n-nodes-base.Wait | 1.1 | Espera 20 segundos |
+| Consultar Status | n8n-nodes-base.HttpRequest | 4.2 | `GET http://localhost:5000/api/buscar/status` |
+| Terminou? | n8n-nodes-base.If | 1 | Compara `$json.status` com `finalizada` |
+| Baixar CSV Completo | n8n-nodes-base.HttpRequest | 4.2 | `GET http://localhost:5000/api/exportar` |
+| Enviar CSV p/ Telegram | n8n-nodes-base.Telegram | 1.2 | `sendDocument` com o CSV |
 
----
+Conexões, conforme o campo `connections`:
 
-## Início Rápido
+```text
+Form Trigger -> Montar Queries Multi-Linha -> ProspectOS Disparar Busca Ampla
+             -> Aguardar 20s -> Consultar Status -> Terminou?
+                                                  |  true: Baixar CSV Completo -> Enviar CSV p/ Telegram
+                                                  |  false: Aguardar 20s
+```
 
-```powershell
-# 1. Suba o ProspectOS (backend em http://127.0.0.1:5000)
-cd C:\Users\Kelvin\Desktop\ProspectOS
-.\iniciar.bat
+O ramo `false` do nó If volta para `Aguardar 20s`, formando o laço de polling. Não há contador de iterações nem timeout no JSON.
 
-# 2. Instale e suba o n8n neste repo
-cd ..\prospectos-n8n-telegram
-npm install n8n
+## Stack
+
+- n8n `^2.46.6`, declarado como dependência em `package.json`.
+- Node.js e npm. O `package.json` não declara campo `engines`, então a versão mínima não está fixada neste repositório.
+- Workflow em JSON puro, sem código JavaScript, Python ou TypeScript neste repositório.
+- CSV como formato de troca entre ProspectOS, n8n e Telegram.
+- Windows como alvo do script auxiliar (`iniciar-n8n.bat`, `.bat`).
+
+## Estrutura do repositório
+
+```text
+prospectos-n8n-telegram/
+├── .env.example
+├── .gitignore
+├── LICENSE
+├── README.md
+├── README.en.md
+├── iniciar-n8n.bat
+├── package.json
+├── docs/
+│   └── GUIA.md
+├── examples/
+│   └── exemplo.csv
+└── workflows/
+    └── ProspectOS_para_Telegram.json
+```
+
+O `.gitignore` cobre `node_modules/`, `.env`, `.env.*` (exceto `.env.example`), `*.csv`, `leads*.csv`, `data/` e `*.log`.
+
+## Pré-requisitos e instalação
+
+Antes de começar:
+
+- Node.js e npm instalados.
+- ProspectOS rodando em `http://localhost:5000`. Ele não é instalado por este repositório.
+- Bot do Telegram criado no `@BotFather` e Chat ID do destinatário.
+- Credencial do tipo Telegram API criada no n8n.
+
+Instalação:
+
+```bash
+git clone https://github.com/KelvinOliveiraCode/prospectos-n8n-telegram.git
+cd prospectos-n8n-telegram
+npm install
+```
+
+O `npm install` instala apenas o n8n, que é a única dependência. O `package.json` define o script `start` como `n8n start`.
+
+Sobre o `.env.example`: ele documenta `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `PROSPECTOS_API` e `PROSPECTOS_DIR`, mas nenhum arquivo deste repositório lê essas variáveis. O token usado em execução vem da credencial do n8n.
+
+## Como executar
+
+```bash
+# 1. Suba o ProspectOS (fora deste repositório)
+cd ../ProspectOS
+./iniciar.bat
+
+# 2. Suba o n8n deste repositório
+cd ../prospectos-n8n-telegram
 npx n8n start
-# Abra http://localhost:5678
+# Interface em http://localhost:5678
 
-# 3. Importe o workflow
-# n8n > Workflows > Import from File > workflows/ProspectOS_para_Telegram.json
+# 3. No n8n: Workflows > Import from File > workflows/ProspectOS_para_Telegram.json
 
-# 4. Configure credencial Telegram (BotFather > Token)
-# Credentials > Telegram API > cole o token
-# No nó "Enviar CSV p/ Telegram": cole seu Chat ID
+# 4. Em Credentials > Telegram API, cole o token do BotFather
+
+# 5. No nó "Enviar CSV p/ Telegram", preencha o Chat ID de destino
+
+# 6. Execute o workflow manualmente e preencha o formulário
 ```
 
-### Crie o Bot no Telegram
+No Windows também é possível usar `iniciar-n8n.bat`, que executa `npx n8n start` na raiz do projeto.
 
-1. Fale com `@BotFather` → `/newbot`
-2. Copie o token (`123456:ABC-DEF...`) — **nunca versione**
-3. Fale com `@getmyid_bot` → copie seu Chat ID
-4. Envie `/start` ao seu bot uma vez (senão o `getUpdates` fica vazio)
+Exemplo de conteúdo aceito no campo `queries`:
 
----
-
-## Como funciona
-
-```
-Form (textarea multi-linhas)
-        ↓
-SET queries = {{ $json.queries }}
-        ↓
-POST /api/buscar  {"queries":"..."}        → ProspectOS varre Maps + analisa site
-        ↓
-Wait 20s → GET /api/buscar/status         → polling até rodando=false
-        ↓
-If status=finalizada
-        ↓
-GET /api/exportar → CSV binário            → colunas de contato direto
-        ↓
-Telegram sendDocument (caption com resumo + arquivo)
+```text
+dentista em Belem
+clinica de estetica em Belem
+academia em Ananindeua
 ```
 
-| Nó | O que faz |
-|---|---|
-| **Form Trigger** | Recebe N linhas `nicho em cidade` |
-| **SET** | Normaliza `queries` |
-| **HTTP POST** | Dispara `POST /api/buscar` no ProspectOS |
-| **Wait + HTTP GET** | Loop de polling a cada 20s |
-| **If** | Sai do loop quando finaliza |
-| **HTTP GET** | Baixa CSV completo de `/api/exportar` |
-| **Telegram** | Envia resumo + CSV como documento |
+## Endpoints (se houver API)
 
-### Modo mapa (pino + raio)
+Este repositório não expõe API, servidor ou rota HTTP. Ele consome três endpoints do ProspectOS, todos fixos em `http://localhost:5000`:
 
-O backend também aceita `{"nichos":[...],"areas":[{"lat":...,"lng":...,"raio_m":...,"rotulo":"..."}]}`. Para usar, troque o corpo do nó POST para esse formato (veja `rotas_leads.py:_validar_busca_por_mapa`).
+| Método | Endpoint | Uso no workflow | Evidência |
+|---|---|---|---|
+| POST | `/api/buscar` | Corpo `{"queries": "<texto com quebras de linha>"}` | `workflows/ProspectOS_para_Telegram.json`, nó `post-buscar` |
+| GET | `/api/buscar/status` | Retorna JSON com o campo `status`; o workflow compara com `finalizada` | nó `get-status` e `if-done` |
+| GET | `/api/exportar` | Retorna o CSV completo como arquivo | nó `get-csv` |
 
----
+Os valores de resposta desses endpoints são definidos pelo ProspectOS, não por este repositório.
 
-## Capacidades
+## Testes e qualidade
 
-| Capacidade | Descrição |
-|---|---|
-| Busca ampla multiquery | N linhas em 1 disparo POST |
-| Polling com retry | Wait 20s até finalizar |
-| Export completo | CSV via `/api/exportar` (21 colunas) |
-| Entrega Telegram | Resumo + documento com nome amigável |
-| Sanitização | `.env` ignorado, `*.csv` ignorado, workflow sem token/chat embutido |
+Não há testes neste repositório. Verificação feita por leitura direta dos arquivos:
 
----
+- Nenhum arquivo de teste, nenhum diretório de teste, nenhum framework de teste.
+- `package.json` tem apenas o script `start` (`n8n start`), sem `test` e sem `lint`.
+- Nenhuma dependência de teste ou de build.
 
-## Perguntas Frequentes
+A verificação possível é manual: importar o workflow no n8n, executar com uma busca de referência e conferir o CSV recebido no Telegram. O `docs/GUIA.md` registra um teste de referência com `dentista em Belem`, mas esse resultado vem do ProspectOS e não pode ser reproduzido apenas com este repositório.
 
-<details>
-<summary><strong>Por que polling a cada 20s em vez de webhook?</strong></summary>
+## Decisões técnicas e trade-offs
 
-O ProspectOS não expõe webhook de término. O polling em `/api/buscar/status` (campo `rodando`) é o padrão já usado pelo frontend. 20s evita sobrecarregar e ainda entrega rápido.
+O polling de 20 segundos foi escolhido no lugar de webhook porque o fluxo depende de um backend que não expõe callback de conclusão. O custo é latência de até 20 segundos por iteração e um laço sem limite no JSON.
 
-</details>
+As quebras de linha são preservadas com `JSON.stringify($json.queries)` no corpo do POST, em vez de montar o JSON por interpolação direta, o que evita corpo malformado quando o usuário cola várias linhas.
 
-<details>
-<summary><strong>Posso enviar para um grupo?</strong></summary>
+O nó HTTP de export usa `responseFormat: file` para tratar o CSV como binário, e não como texto, o que permite o envio direto como documento no Telegram.
 
-Sim, adicione o bot ao grupo e use o `chat_id` do grupo. Para chat pessoal o fluxo é idêntico.
+O caminho do backend está fixo em `http://localhost:5000` nos três nós HTTP, e não vem de variável de ambiente. Isso simplifica o uso local e impede apontar para outro host sem editar o JSON.
 
-</details>
+O `.env.example` existe como documentação de configuração, mas o workflow não referencia essas variáveis. A configuração real de acesso ao Telegram é feita pela credencial do n8n, e o Chat ID é preenchido no nó.
 
-<details>
-<summary><strong>E se a busca demorar 10 min?</strong></summary>
+## Limitações conhecidas
 
-O loop volta para o Wait automaticamente. Sem limite de iterações no workflow — só pare se o ProspectOS travar (ver `GET /api/buscar/status` manualmente).
+- O laço de polling não tem limite de iterações nem timeout: se o ProspectOS travar sem mudar o campo `status`, o workflow repete `Aguardar 20s` indefinidamente.
+- O nó `Enviar CSV p/ Telegram` no JSON traz apenas `channel: document` e o texto da legenda. Não há `chatId` nem `resource` no arquivo, então o destino precisa ser configurado na interface do n8n após a importação.
+- O `.env` não é lido por nenhum código deste repositório. As variáveis do `.env.example` são apenas referência.
+- As URLs dos três nós HTTP são fixas em `localhost:5000`.
+- O `package.json` não declara `engines`, `test` nem `lint`.
+- O `examples/exemplo.csv` tem 2 linhas de dados, com nomes e telefones de exemplo. Não é a base real de leads.
+- O `package.json` é marcado como `private: true`, então não há publicação em registry.
+- Coleta de dados de Google Maps e Instagram pode violar termos de uso desses serviços. A execução é por conta de quem roda.
 
-</details>
+## Licença e autor
 
-<details>
-<summary><strong>O CSV contém dados pessoais?</strong></summary>
+MIT. Copyright (c) 2026 Kelvin Rebelo de Oliveira. Autor: [Kelvin Oliveira](https://github.com/KelvinOliveiraCode)
 
-O CSV real vem do seu `leads.db`. **Não versione** dados reais. Este repo traz só `examples/exemplo.csv` anonimizado. Adicione `*.csv` ao `.gitignore` (já feito).
-
-</details>
-
----
-
-## Documentação
-
-- **Código-fonte** — `workflows/ProspectOS_para_Telegram.json` é o único artefato executável
-- **ProspectOS original** — [nando0x/ProspectOS](https://github.com/nando0x/ProspectOS)
-- **Guia detalhado** — `docs/GUIA.md`
-- **Exemplo de saída** — `examples/exemplo.csv`
-
-## Licença
-
-[MIT](LICENSE) · Kelvin Oliveira
-
----
-
-<div align="center">
-
-**Construído com** n8n 2.46 · ProspectOS (Flask) · Telegram Bot API
-
-**Autor** · [Kelvin Oliveira](https://github.com/KelvinOliveiraCode) · [Portfólio](https://kelvinoliveiracode.github.io/portfolio/)
-
-</div>
+Documentação relacionada: [docs/GUIA.md](docs/GUIA.md) e [workflows/ProspectOS_para_Telegram.json](workflows/ProspectOS_para_Telegram.json).
